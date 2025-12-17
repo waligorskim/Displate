@@ -1,0 +1,350 @@
+{
+  "name": "Trend Tool v2 - Weekly Report (Phase 2)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 11 * * 2"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Weekly Tuesday 11:00 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "projectId": "analytics-324613",
+        "sqlQuery": "SELECT trend_name, trend_score, trend_category, growth_7d_pct, first_seen_date, latest_refresh_date, DATE_DIFF(CURRENT_DATE(), first_seen_date, DAY) AS trend_age_days, CASE WHEN DATE_DIFF(CURRENT_DATE(), first_seen_date, DAY) <= 3 THEN 'NEW' WHEN DATE_DIFF(CURRENT_DATE(), first_seen_date, DAY) <= 7 THEN 'RECENT' WHEN DATE_DIFF(CURRENT_DATE(), first_seen_date, DAY) <= 14 THEN 'ESTABLISHED' ELSE 'MATURE' END AS trend_freshness, ip_name, universe, characters, publisher, themes, relevance_score FROM `analytics-324613.trendtool_export.google_trends_enriched` WHERE trend_category IN ('GAMES', 'MOVIES', 'TV_SERIES', 'MANGA_ANIME') AND latest_refresh_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) AND trend_score >= 50 ORDER BY trend_score DESC, growth_7d_pct DESC LIMIT 50"
+      },
+      "id": "fetch-trends",
+      "name": "Fetch Trends - All Categories",
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google BigQuery"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "projectId": "analytics-324613",
+        "sqlQuery": "WITH search_events AS (SELECT (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'search_term') AS search_term, event_date, user_pseudo_id FROM `analytics-324613.analytics_374261714.events_*` WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)) AND FORMAT_DATE('%Y%m%d', CURRENT_DATE()) AND event_name = 'search_perform' AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'search_term') IS NOT NULL) SELECT LOWER(TRIM(search_term)) AS search_term_normalized, COUNT(*) AS search_count_30d, COUNT(DISTINCT user_pseudo_id) AS unique_searchers_30d FROM search_events WHERE LENGTH(search_term) >= 2 GROUP BY search_term_normalized HAVING search_count_30d >= 5 ORDER BY search_count_30d DESC LIMIT 10000"
+      },
+      "id": "fetch-search-data",
+      "name": "Fetch Internal Search Data",
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2,
+      "position": [220, 200],
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google BigQuery"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-trends",
+      "name": "Loop Over Trends",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "model": "gemini-1.5-flash",
+        "options": {
+          "temperature": 0.1,
+          "maxOutputTokens": 500
+        },
+        "prompt": "You are a pop culture and entertainment metadata extractor. Given a trending topic name, extract structured information about it.\n\nYou must respond with ONLY valid JSON, no additional text.\n\nOutput schema:\n{\n  \"ip_name\": \"string - The official IP/franchise name\",\n  \"universe\": \"string | null - The larger universe\",\n  \"characters\": [\"array of main character names\"],\n  \"publisher\": \"string | null - The company/studio\",\n  \"themes\": [\"array of 2-4 thematic tags\"],\n  \"release_context\": \"string | null - Why it might be trending\",\n  \"confidence\": \"HIGH | MEDIUM | LOW\"\n}\n\nExtract metadata for:\nTrend Name: {{ $json.trend_name }}\nCategory: {{ $json.trend_category }}\nGoogle Trends Score: {{ $json.trend_score }}\nGrowth (7d): {{ $json.growth_7d_pct }}\n\nRespond with JSON only."
+      },
+      "id": "trend-enricher",
+      "name": "Trend Enricher",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleVertex",
+      "typeVersion": 1,
+      "position": [660, 0],
+      "credentials": {
+        "googleVertexAiApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Vertex AI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse enricher JSON response\nconst trend = $('Loop Over Trends').first().json;\nconst enricherResponse = $input.first().json.text || $input.first().json.response;\n\nlet enrichment;\ntry {\n  // Clean JSON if wrapped in markdown\n  let jsonStr = enricherResponse;\n  if (jsonStr.includes('```json')) {\n    jsonStr = jsonStr.replace(/```json\\n?/g, '').replace(/```\\n?/g, '');\n  }\n  enrichment = JSON.parse(jsonStr.trim());\n} catch (e) {\n  enrichment = {\n    ip_name: trend.trend_name,\n    universe: null,\n    characters: [],\n    publisher: null,\n    themes: [],\n    release_context: null,\n    confidence: 'LOW'\n  };\n}\n\nreturn [{\n  json: {\n    ...trend,\n    ...enrichment\n  }\n}];"
+      },
+      "id": "parse-enrichment",
+      "name": "Parse Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "model": "gemini-1.5-flash",
+        "options": {
+          "temperature": 0.1,
+          "maxOutputTokens": 200
+        },
+        "prompt": "You are a relevance classifier for Displate, a company that sells metal poster artwork.\n\nScore this trend 0-100 for Displate relevance:\n- HIGH (80-100): Visual IPs, strong fan art, games/anime/movies with iconic characters\n- MEDIUM (50-79): General entertainment with some visual appeal\n- LOW (0-49): News, politics, non-visual content\n\nRespond with ONLY valid JSON:\n{\n  \"relevance_score\": <number>,\n  \"relevance_tier\": \"HIGH | MEDIUM | LOW\",\n  \"reasoning\": \"one sentence\",\n  \"skip_reason\": null or \"reason if LOW\"\n}\n\nTrend: {{ $json.trend_name }}\nCategory: {{ $json.trend_category }}\nIP: {{ $json.ip_name }}\nPublisher: {{ $json.publisher }}\nThemes: {{ $json.themes }}\n\nJSON only:"
+      },
+      "id": "relevance-classifier",
+      "name": "Relevance Classifier",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleVertex",
+      "typeVersion": 1,
+      "position": [1100, 0],
+      "credentials": {
+        "googleVertexAiApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Vertex AI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse classifier response and filter low relevance\nconst trend = $('Parse Enrichment').first().json;\nconst classifierResponse = $input.first().json.text || $input.first().json.response;\n\nlet classification;\ntry {\n  let jsonStr = classifierResponse;\n  if (jsonStr.includes('```json')) {\n    jsonStr = jsonStr.replace(/```json\\n?/g, '').replace(/```\\n?/g, '');\n  }\n  classification = JSON.parse(jsonStr.trim());\n} catch (e) {\n  classification = {\n    relevance_score: 50,\n    relevance_tier: 'MEDIUM',\n    reasoning: 'Failed to parse',\n    skip_reason: null\n  };\n}\n\nconst result = {\n  ...trend,\n  relevance_score: classification.relevance_score,\n  relevance_tier: classification.relevance_tier,\n  relevance_reasoning: classification.reasoning,\n  skip_reason: classification.skip_reason\n};\n\n// Route based on relevance\nif (classification.relevance_tier === 'LOW') {\n  return [[], [{ json: result }]];  // Output 1: continue, Output 2: skip\n}\n\nreturn [[{ json: result }], []];  // Continue processing"
+      },
+      "id": "parse-classification",
+      "name": "Parse & Filter Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 0],
+      "outputs": ["Continue", "Skip (Low Relevance)"]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Match search terms to trend\nconst trend = $input.first().json;\nconst searchData = $('Fetch Internal Search Data').all();\n\n// Build search index\nconst searchIndex = new Map();\nsearchData.forEach(item => {\n  const term = (item.json.search_term_normalized || '').toLowerCase();\n  if (term) searchIndex.set(term, item.json);\n});\n\n// Normalize function\nfunction normalize(str) {\n  if (!str) return '';\n  return str.toLowerCase().replace(/[^a-z0-9\\s]/g, '').replace(/\\s+/g, ' ').trim();\n}\n\n// Build search terms from enrichment\nconst searchTerms = [\n  trend.ip_name,\n  trend.trend_name,\n  ...(trend.characters || []),\n  ...(trend.themes || [])\n].filter(Boolean);\n\n// Find matches\nconst matches = [];\nlet totalVolume = 0;\n\nfor (const term of searchTerms) {\n  const normalized = normalize(term);\n  if (!normalized) continue;\n  \n  // Exact match\n  if (searchIndex.has(normalized)) {\n    const data = searchIndex.get(normalized);\n    matches.push({ term: normalized, volume: data.search_count_30d, type: 'exact' });\n    totalVolume += data.search_count_30d;\n    continue;\n  }\n  \n  // Partial match\n  for (const [indexTerm, data] of searchIndex) {\n    if (indexTerm.includes(normalized) || normalized.includes(indexTerm)) {\n      if (!matches.find(m => m.term === indexTerm)) {\n        matches.push({ term: indexTerm, volume: data.search_count_30d, type: 'partial' });\n        totalVolume += data.search_count_30d;\n      }\n    }\n  }\n}\n\n// Calculate rank\nconst allVolumes = searchData.map(i => i.json.search_count_30d || 0).sort((a, b) => b - a);\nconst rank = allVolumes.findIndex(v => v <= totalVolume) + 1;\nconst percentile = allVolumes.length > 0 ? Math.round((1 - rank / allVolumes.length) * 100) : 0;\n\n// Demand level\nlet demandLevel;\nif (totalVolume >= 1000) demandLevel = 'HIGH';\nelse if (totalVolume >= 200) demandLevel = 'MEDIUM';\nelse if (totalVolume >= 50) demandLevel = 'LOW';\nelse demandLevel = 'MINIMAL';\n\nreturn [{\n  json: {\n    ...trend,\n    internal_demand: {\n      search_volume_30d: totalVolume,\n      search_rank: rank,\n      search_percentile: percentile,\n      demand_level: demandLevel,\n      top_queries: matches.slice(0, 5).map(m => m.term),\n      match_count: matches.length\n    }\n  }\n}];"
+      },
+      "id": "search-matcher",
+      "name": "Internal Search Matcher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// DEMAND-SUPPLY GAP CALCULATOR\n// Core intelligence engine\n\nconst trend = $input.first().json;\n\n// Extract signals\nconst externalSignal = {\n  google_trends_score: trend.trend_score || 0,\n  growth_7d: trend.growth_7d_pct || '0%',\n  trend_age_days: trend.trend_age_days || 0,\n  freshness: trend.trend_freshness || 'UNKNOWN'\n};\n\nconst internalDemand = trend.internal_demand || {\n  search_volume_30d: 0,\n  demand_level: 'MINIMAL'\n};\n\n// Supply data (placeholder - wire to actual lookups)\nconst supply = {\n  marketplace_count: trend.marketplace_count || 0,\n  validation_queue: trend.validation_queue_count || 0\n};\n\n// Coverage data (placeholder - wire to brand lookup)\nconst coverage = {\n  has_brand: trend.has_brand || false\n};\n\n// GAP ASSESSMENT LOGIC\nfunction assessGap(external, internal, supply, coverage) {\n  const externalHigh = external.google_trends_score >= 70;\n  const externalMed = external.google_trends_score >= 40;\n  const internalHigh = internal.search_volume_30d >= 500;\n  const internalMed = internal.search_volume_30d >= 100;\n  const supplyLow = supply.marketplace_count < 20;\n  const hasBrand = coverage.has_brand;\n\n  if (externalHigh && internalHigh && supplyLow && !hasBrand) {\n    return {\n      assessment: 'HIGH_OPPORTUNITY',\n      emoji: '🔥',\n      reasoning: 'High external + internal demand, minimal supply, no license',\n      action: 'PRIORITIZE_LICENSING'\n    };\n  }\n  \n  if (externalHigh && internalHigh && supplyLow && hasBrand) {\n    return {\n      assessment: 'EXPAND_INVENTORY',\n      emoji: '📈',\n      reasoning: 'High demand with license, need more artworks',\n      action: 'PUSH_TO_ARTISTS'\n    };\n  }\n  \n  if (externalHigh && !internalHigh) {\n    return {\n      assessment: 'MONITOR',\n      emoji: '👁️',\n      reasoning: 'Trending externally but low internal demand',\n      action: 'WATCH'\n    };\n  }\n  \n  if (externalMed && internalMed && !supplyLow) {\n    return {\n      assessment: 'WELL_COVERED',\n      emoji: '✅',\n      reasoning: 'Moderate demand with adequate supply',\n      action: 'NONE'\n    };\n  }\n  \n  if (internalHigh && supplyLow && !hasBrand) {\n    return {\n      assessment: 'HIGH_OPPORTUNITY',\n      emoji: '🔥',\n      reasoning: 'Strong internal demand, fans already searching',\n      action: 'PRIORITIZE_LICENSING'\n    };\n  }\n  \n  return {\n    assessment: 'LOW_PRIORITY',\n    emoji: '⏸️',\n    reasoning: 'Weak signals',\n    action: 'NONE'\n  };\n}\n\nconst gap = assessGap(externalSignal, internalDemand, supply, coverage);\n\nreturn [{\n  json: {\n    trend_name: trend.trend_name,\n    trend_category: trend.trend_category,\n    ip_name: trend.ip_name,\n    external_signal: externalSignal,\n    internal_demand: internalDemand,\n    supply: supply,\n    coverage: coverage,\n    gap_assessment: gap.assessment,\n    gap_emoji: gap.emoji,\n    gap_reasoning: gap.reasoning,\n    recommended_action: gap.action,\n    characters: trend.characters,\n    themes: trend.themes,\n    publisher: trend.publisher,\n    relevance_score: trend.relevance_score,\n    processed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "gap-calculator",
+      "name": "Demand-Supply Gap Calculator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect all processed trends\n// This node aggregates results from the loop\n\nconst items = $input.all();\n\n// Sort by gap priority\nconst priorityOrder = {\n  'HIGH_OPPORTUNITY': 1,\n  'EXPAND_INVENTORY': 2,\n  'MONITOR': 3,\n  'WELL_COVERED': 4,\n  'LOW_PRIORITY': 5\n};\n\nconst sorted = items.sort((a, b) => {\n  const aOrder = priorityOrder[a.json.gap_assessment] || 99;\n  const bOrder = priorityOrder[b.json.gap_assessment] || 99;\n  if (aOrder !== bOrder) return aOrder - bOrder;\n  return (b.json.external_signal?.google_trends_score || 0) - (a.json.external_signal?.google_trends_score || 0);\n});\n\nreturn sorted;"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate & Sort Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format Slack Block Kit message\nconst trends = $input.all();\nconst reportDate = new Date().toISOString().split('T')[0];\n\n// Category emoji map\nconst categoryEmoji = {\n  'GAMES': '🎮',\n  'MOVIES': '🎬',\n  'TV_SERIES': '📺',\n  'MANGA_ANIME': '🎌'\n};\n\n// Build blocks\nconst blocks = [\n  {\n    \"type\": \"header\",\n    \"text\": {\n      \"type\": \"plain_text\",\n      \"text\": `📊 Trend Intelligence Report - ${reportDate}`,\n      \"emoji\": true\n    }\n  },\n  {\n    \"type\": \"context\",\n    \"elements\": [\n      {\n        \"type\": \"mrkdwn\",\n        \"text\": `${trends.length} trends analyzed | Generated ${new Date().toLocaleTimeString('en-US', { timeZone: 'UTC' })} UTC`\n      }\n    ]\n  },\n  { \"type\": \"divider\" }\n];\n\n// Add each trend\nfor (const trend of trends.slice(0, 15)) {  // Limit to top 15\n  const t = trend.json;\n  const catEmoji = categoryEmoji[t.trend_category] || '📌';\n  \n  // Main trend block\n  blocks.push({\n    \"type\": \"section\",\n    \"text\": {\n      \"type\": \"mrkdwn\",\n      \"text\": `${catEmoji} *${t.trend_category}* | *${t.ip_name || t.trend_name}*\\n` +\n              `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n              `📈 Google Trends: *${t.external_signal?.google_trends_score || 'N/A'}* (${t.external_signal?.growth_7d || 'N/A'})\\n` +\n              `🔍 Internal searches: *${t.internal_demand?.search_volume_30d?.toLocaleString() || 0}* in 30d\\n` +\n              `📦 Artworks: ${t.supply?.marketplace_count || 0} live | ${t.supply?.validation_queue || 0} pending\\n` +\n              `${t.coverage?.has_brand ? '✅ Licensed' : '❌ No license'}\\n\\n` +\n              `🕐 Day ${t.external_signal?.trend_age_days || '?'} | ${t.external_signal?.freshness || ''}\\n` +\n              `🎯 *${t.gap_assessment}* ${t.gap_emoji}\\n` +\n              `_${t.gap_reasoning}_`\n    }\n  });\n  \n  // Action buttons\n  blocks.push({\n    \"type\": \"actions\",\n    \"block_id\": `trend_actions_${t.trend_name?.replace(/[^a-zA-Z0-9]/g, '_')?.slice(0, 30)}`,\n    \"elements\": [\n      {\n        \"type\": \"button\",\n        \"text\": { \"type\": \"plain_text\", \"text\": \"I'm on it\", \"emoji\": true },\n        \"style\": \"primary\",\n        \"action_id\": \"claim_trend\",\n        \"value\": JSON.stringify({ trend: t.trend_name, action: 'claim' })\n      },\n      {\n        \"type\": \"button\",\n        \"text\": { \"type\": \"plain_text\", \"text\": \"Reach out\", \"emoji\": true },\n        \"action_id\": \"reach_out\",\n        \"value\": JSON.stringify({ trend: t.trend_name, action: 'reach_out' })\n      },\n      {\n        \"type\": \"button\",\n        \"text\": { \"type\": \"plain_text\", \"text\": \"Not for us\", \"emoji\": true },\n        \"action_id\": \"dismiss\",\n        \"value\": JSON.stringify({ trend: t.trend_name, action: 'dismiss' })\n      },\n      {\n        \"type\": \"button\",\n        \"text\": { \"type\": \"plain_text\", \"text\": \"Snooze 7d\", \"emoji\": true },\n        \"action_id\": \"snooze\",\n        \"value\": JSON.stringify({ trend: t.trend_name, action: 'snooze', days: 7 })\n      }\n    ]\n  });\n  \n  blocks.push({ \"type\": \"divider\" });\n}\n\n// Summary footer\nconst highOpp = trends.filter(t => t.json.gap_assessment === 'HIGH_OPPORTUNITY').length;\nconst expand = trends.filter(t => t.json.gap_assessment === 'EXPAND_INVENTORY').length;\nconst monitor = trends.filter(t => t.json.gap_assessment === 'MONITOR').length;\n\nblocks.push({\n  \"type\": \"context\",\n  \"elements\": [\n    {\n      \"type\": \"mrkdwn\",\n      \"text\": `Summary: 🔥 ${highOpp} High Opportunity | 📈 ${expand} Expand Inventory | 👁️ ${monitor} Monitor`\n    }\n  ]\n});\n\nreturn [{\n  json: {\n    blocks: blocks,\n    text: `Trend Intelligence Report - ${reportDate}: ${highOpp} high opportunity trends identified`\n  }\n}];"
+      },
+      "id": "format-slack",
+      "name": "Format Slack Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": {
+          "__rl": true,
+          "value": "#tmp_trend_tool_v2",
+          "mode": "name"
+        },
+        "blocksUi": "={{ $json.blocks }}",
+        "text": "={{ $json.text }}",
+        "otherOptions": {}
+      },
+      "id": "post-slack",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [2640, 0],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Slack OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "ttool",
+        "table": "trend_tool_reports",
+        "columns": "report_date, report_json, trend_count, high_opportunity_count, created_at",
+        "options": {}
+      },
+      "id": "save-report",
+      "name": "Save Report to Postgres",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2860, 0],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log skipped trends\nconst skipped = $input.all();\nconsole.log(`Skipped ${skipped.length} low-relevance trends`);\nreturn skipped;"
+      },
+      "id": "skip-log",
+      "name": "Log Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 200]
+    },
+    {
+      "parameters": {},
+      "id": "merge-back",
+      "name": "Merge Back to Loop",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1980, 0]
+    }
+  ],
+  "connections": {
+    "Weekly Tuesday 11:00 UTC": {
+      "main": [
+        [
+          { "node": "Fetch Trends - All Categories", "type": "main", "index": 0 },
+          { "node": "Fetch Internal Search Data", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Trends - All Categories": {
+      "main": [
+        [
+          { "node": "Loop Over Trends", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Loop Over Trends": {
+      "main": [
+        [
+          { "node": "Trend Enricher", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Aggregate & Sort Results", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Trend Enricher": {
+      "main": [
+        [
+          { "node": "Parse Enrichment", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Enrichment": {
+      "main": [
+        [
+          { "node": "Relevance Classifier", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Relevance Classifier": {
+      "main": [
+        [
+          { "node": "Parse & Filter Classification", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse & Filter Classification": {
+      "main": [
+        [
+          { "node": "Internal Search Matcher", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Log Skipped", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Internal Search Matcher": {
+      "main": [
+        [
+          { "node": "Demand-Supply Gap Calculator", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Demand-Supply Gap Calculator": {
+      "main": [
+        [
+          { "node": "Merge Back to Loop", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Log Skipped": {
+      "main": [
+        [
+          { "node": "Merge Back to Loop", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Merge Back to Loop": {
+      "main": [
+        [
+          { "node": "Loop Over Trends", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Aggregate & Sort Results": {
+      "main": [
+        [
+          { "node": "Format Slack Message", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Format Slack Message": {
+      "main": [
+        [
+          { "node": "Post to Slack", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Post to Slack": {
+      "main": [
+        [
+          { "node": "Save Report to Postgres", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["trend-tool", "phase-2"],
+  "triggerCount": 1,
+  "versionId": "phase2-v1"
+}

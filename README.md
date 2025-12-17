@@ -1,49 +1,45 @@
-# Displate Knowledge Repository
+# Displate Trend Intelligence Tool
 
-Structured knowledge base about Displate for use with AI assistants, Claude Code, and internal tools.
-
-## Purpose
-
-This repository contains comprehensive documentation about Displate's products, processes, analytics, and operations. It's designed to be consumed by AI systems (Claude, ChatGPT, etc.) to provide accurate, context-aware responses about Displate.
+AI-powered trend monitoring system that identifies emerging pop culture opportunities by analyzing Google Trends data and matching against Displate's internal demand signals.
 
 ## Quick Start
 
-### For AI Integrations
-Point your RAG system or Claude Code to this repository. The `CLAUDE.md` file contains instructions for AI assistants.
+1. **Import workflow**: In n8n, go to Workflows → Import from File → select `trend_tool_workflow_phase2.json`
+2. **Configure credentials**: Update BigQuery, Vertex AI, Slack, and Postgres credential IDs
+3. **Test run**: Execute manually to validate data flow
+4. **Activate schedule**: Workflow runs Tuesdays at 11:00 UTC
 
-### For Employees
-1. Read `CONTRIBUTING.md` for how to add/update knowledge
-2. Use the extraction prompt to convert internal docs to this format
-3. Place output in the appropriate domain folder
+## Files
 
-## Structure
+| File | Purpose |
+|------|---------|
+| `trend_tool_workflow_phase2.json` | Importable n8n workflow (Phase 2) |
+| `phase2_implementation.md` | Implementation details: queries, prompts, JS functions |
+| `displate_trend_intelligence_system_spec_v3.md` | Full system specification |
+| `trend_tool_roadmap.md` | 4-phase development roadmap |
+| `trend_tool_developer_docs.md` | Technical deep-dive for developers |
+| `trend_tool_executive_summary.md` | One-pager for stakeholders |
 
-| Folder | Contents |
-|--------|----------|
-| `/product` | Product catalog, features, sizes, pricing, production process |
-| `/analytics` | Metrics definitions, data sources, reporting, GA4 setup |
-| `/marketing` | Brand voice, campaigns, channels, content guidelines |
-| `/operations` | Workflows, fulfillment, shipping, tools, team structure |
-| `/customer-support` | Policies, common issues, returns, escalation |
-| `/technical` | Platform architecture, integrations, APIs, GTM |
-| `/business` | KPIs, strategy, OKRs, competitive analysis |
-| `/diagrams` | Visual assets, process flows, architecture diagrams |
+## Architecture
 
-## Key Files
+```
+Google Trends → BigQuery → LLM Enrichment → Relevance Filter → 
+GA4 Search Match → Gap Analysis → Slack (#tmp_trend_tool_v2)
+```
 
-- `CLAUDE.md` - Instructions for Claude Code and AI assistants
-- `CONTRIBUTING.md` - How to extract and add knowledge
-- Domain folders contain topic-specific documentation
+## Key Features (Phase 2)
 
-## Maintenance
+- **Multi-category**: Games, Movies, TV Series, Manga/Anime
+- **LLM Pipeline**: Gemini-powered metadata extraction + relevance scoring
+- **Demand-Supply Gap**: Matches external trends to internal search volume
+- **Smart Routing**: Only surfaces trends with Displate relevance ≥50
 
-- **Owner**: Mateusz Waligóra
-- **Update Frequency**: As needed
-- **Last Major Update**: December 2024
+## Pending (Need Data Sources)
 
-## Usage Notes
+- Brand catalog lookup (need BizDev brand list)
+- Marketplace inventory count (need Algolia API)
+- Validation queue status (need admin API access)
 
-- All content is in Markdown for maximum compatibility
-- Files tagged `[CONFIDENTIAL]` contain sensitive information
-- Files tagged `[NEEDS INFO]` have documented knowledge gaps
-- Check "Last Updated" dates for time-sensitive information
+## Contact
+
+Questions? Reach out to Mateusz Waligórski or post in #analytics-data-and-reports
