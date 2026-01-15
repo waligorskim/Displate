@@ -1,0 +1,480 @@
+{
+  "name": "Trend Tool Chatbot v2 - Domain Expert",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trend-events",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-events",
+      "name": "Webhook_Events",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "trend-events"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trend-slash",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-slash",
+      "name": "Webhook_Slash",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 500],
+      "webhookId": "trend-slash"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "challenge",
+              "leftValue": "={{ $json.challenge }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-challenge",
+      "name": "Is_URL_Verification",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { challenge: $json.challenge } }}",
+        "options": {}
+      },
+      "id": "respond-challenge",
+      "name": "Respond_Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [620, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true } }}",
+        "options": {}
+      },
+      "id": "ack-event",
+      "name": "Ack_Event",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [620, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { response_type: 'ephemeral', text: '🔍 Checking trends...' } }}",
+        "options": {}
+      },
+      "id": "ack-slash",
+      "name": "Ack_Slash",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [420, 500]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-inputs",
+      "name": "Merge_Inputs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [820, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// QUERY CLASSIFIER - See 01_query_classifier.js for full code\nconst input = $input.first().json;\n\nlet rawText = '';\nlet userId = '';\nlet channelId = '';\nlet threadTs = null;\nlet responseUrl = null;\n\nif (input.event) {\n  rawText = (input.event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();\n  userId = input.event.user;\n  channelId = input.event.channel;\n  threadTs = input.event.ts;\n} else if (input.text !== undefined) {\n  rawText = input.text || '';\n  userId = input.user_id;\n  channelId = input.channel_id;\n  responseUrl = input.response_url;\n}\n\nconst text = rawText.trim();\nconst lower = text.toLowerCase();\n\n// Query patterns\nconst queryPatterns = [\n  { type: 'COMPARISON', patterns: [/\\b(compare|vs\\.?|versus|or)\\b.*\\b(vs\\.?|or|versus)\\b/i, /should we.*(or|vs)/i, /which.*(better|pick|choose|invest)/i, /\\bvs\\.?\\b/i], confidence: 0.9 },\n  { type: 'SIZING', patterns: [/how (big|large|popular|huge)/i, /fandom size/i, /market size/i], confidence: 0.9 },\n  { type: 'CALENDAR', patterns: [/upcoming|coming (soon|out|up)/i, /release (date|schedule|calendar)/i, /new (releases|titles|games|movies)/i], confidence: 0.85 },\n  { type: 'OPINION', patterns: [/what do you think/i, /should (we|i) (invest|focus|prioritize)/i, /worth (it|investing|pursuing)/i, /recommend/i, /your (take|opinion|thoughts)/i], confidence: 0.85 },\n  { type: 'SEARCH', patterns: [/any mention/i, /search for/i, /find.*(trend|mention)/i, /do we have/i], confidence: 0.9 },\n  { type: 'NEWS', patterns: [/\\b(free|deal|sale|discount)\\b/i, /epic (store|games)/i, /(announce|announced|announcement)/i, /did.*(detect|see|notice|catch)/i], confidence: 0.8 },\n  { type: 'REGIONAL', patterns: [/\\bin (DE|UK|US|FR|PL|EU|Germany|France|Poland|America|Europe)\\b/i, /top.*(in|for) \\w{2,}/i], confidence: 0.85 },\n  { type: 'DEEP_DIVE', patterns: [/tell me (about|more)/i, /what (is|about|are)/i, /more (about|on|info)/i], confidence: 0.8 }\n];\n\nlet queryType = 'DEEP_DIVE';\nlet confidence = 0.5;\nlet matchedPattern = null;\n\nfor (const category of queryPatterns) {\n  for (const pattern of category.patterns) {\n    if (pattern.test(lower)) {\n      if (category.confidence > confidence) {\n        queryType = category.type;\n        confidence = category.confidence;\n        matchedPattern = pattern.toString();\n      }\n      break;\n    }\n  }\n}\n\n// Entity extraction\nconst stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'about', 'more', 'tell', 'me', 'what', 'how', 'think', 'you', 'your', 'opinion', 'of', 'on', 'in', 'to', 'for', 'trend', 'trends', 'game', 'games', 'movie', 'fandom', 'we', 'should', 'invest', 'and', 'or', 'vs']);\n\nfunction extractEntities(text) {\n  const entities = [];\n  const quotedMatches = text.match(/[\"']([^\"']+)[\"']/g);\n  if (quotedMatches) quotedMatches.forEach(m => entities.push({ name: m.replace(/[\"']/g, '').trim(), confidence: 0.95, source: 'quoted' }));\n  \n  const titleCasePattern = /\\b([A-Z][a-zA-Z]*(?:\\s+[A-Z][a-zA-Z]*)*(?:\\s+\\d+)?)\\b/g;\n  let match;\n  while ((match = titleCasePattern.exec(rawText)) !== null) {\n    const candidate = match[1].trim();\n    if (candidate.length > 2 && !stopWords.has(candidate.toLowerCase())) {\n      entities.push({ name: candidate, confidence: 0.7, source: 'title_case' });\n    }\n  }\n  \n  const aboutPattern = /(?:about|on|for|called)\\s+([A-Za-z0-9][\\w\\s:'-]{2,30}?)(?:\\?|$|,|\\.|!)/gi;\n  while ((match = aboutPattern.exec(text)) !== null) {\n    const candidate = match[1].trim();\n    const words = candidate.split(/\\s+/);\n    const filtered = words.filter(w => !stopWords.has(w.toLowerCase())).join(' ');\n    if (filtered.length > 2) entities.push({ name: filtered, confidence: 0.75, source: 'preposition' });\n  }\n  \n  const seen = new Set();\n  return entities.filter(e => { const key = e.name.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }).sort((a, b) => b.confidence - a.confidence).slice(0, 3);\n}\n\nconst entities = extractEntities(text);\n\n// Region extraction\nconst regionMap = { 'de': 'DE', 'germany': 'DE', 'uk': 'GB', 'us': 'US', 'usa': 'US', 'fr': 'FR', 'france': 'FR', 'pl': 'PL', 'poland': 'PL', 'eu': 'EU', 'europe': 'EU' };\nlet region = null;\nfor (const [key, code] of Object.entries(regionMap)) {\n  if (lower.includes(key)) { region = code; break; }\n}\n\n// Category extraction\nconst categoryMap = { 'gaming': 'GAMES', 'games': 'GAMES', 'game': 'GAMES', 'anime': 'MANGA_ANIME', 'manga': 'MANGA_ANIME', 'movie': 'MOVIES', 'movies': 'MOVIES', 'tv': 'TV_SERIES', 'series': 'TV_SERIES' };\nlet category = null;\nfor (const [key, cat] of Object.entries(categoryMap)) {\n  if (lower.includes(key)) { category = cat; break; }\n}\n\nreturn [{ json: {\n  query_type: queryType,\n  confidence: confidence,\n  matched_pattern: matchedPattern,\n  entities: entities,\n  primary_entity: entities[0]?.name || null,\n  secondary_entity: entities[1]?.name || null,\n  region: region,\n  category: category,\n  original_text: text,\n  user_id: userId,\n  channel_id: channelId,\n  thread_ts: threadTs,\n  response_url: responseUrl\n}}];"
+      },
+      "id": "query-classifier",
+      "name": "Query_Classifier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "low-confidence",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 0.6,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            },
+            {
+              "id": "needs-entity",
+              "leftValue": "={{ $json.primary_entity }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "check-llm-needed",
+      "name": "Needs_LLM",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1220, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// LLM FALLBACK - Build prompt for Gemini\nconst input = $input.first().json;\n\nconst systemPrompt = `You are a query parser for a trend intelligence tool. Extract structured information from queries about entertainment IPs (games, movies, anime, TV shows). RESPOND ONLY WITH VALID JSON.`;\n\nconst userPrompt = `Parse this query: \"${input.original_text}\"\n\nExtract:\n1. query_type: DEEP_DIVE, COMPARISON, SIZING, SEARCH, CALENDAR, REGIONAL, OPINION, or NEWS\n2. entities: Array of entertainment IP/title names (max 3)\n3. category: GAMES, MOVIES, TV_SERIES, MANGA_ANIME, or null\n4. region: Country code (US, DE, UK, FR, PL, EU) or null\n5. confidence: 0-1\n\nExamples:\n- \"what about Path of Exile 2\" → {\"query_type\":\"DEEP_DIVE\",\"entities\":[\"Path of Exile 2\"],\"category\":\"GAMES\",\"region\":null,\"confidence\":0.95}\n- \"Warframe vs Crusader Kings\" → {\"query_type\":\"COMPARISON\",\"entities\":[\"Warframe\",\"Crusader Kings\"],\"category\":\"GAMES\",\"region\":null,\"confidence\":0.9}\n\nJSON response:`;\n\nreturn [{ json: {\n  ...input,\n  llm_used: true,\n  llm_prompt: { system: systemPrompt, user: userPrompt }\n}}];"
+      },
+      "id": "llm-fallback-prep",
+      "name": "LLM_Fallback_Prep",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"parts\": [\n      { \"text\": \"{{ $json.llm_prompt.system }}\" },\n      { \"text\": \"{{ $json.llm_prompt.user }}\" }\n    ]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 0.1,\n    \"maxOutputTokens\": 500\n  }\n}",
+        "options": {}
+      },
+      "id": "gemini-call",
+      "name": "Gemini_Parse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 300],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "gemini-api-key",
+          "name": "Gemini API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// LLM MERGER - Parse Gemini response\nconst input = $input.first().json;\nconst original = $('Query_Classifier').first().json;\n\nlet llmResult;\ntry {\n  const content = input.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  let jsonStr = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  llmResult = JSON.parse(jsonStr);\n} catch (e) {\n  return [{ json: { ...original, llm_parse_failed: true } }];\n}\n\nconst useQueryType = (llmResult.confidence || 0) > original.confidence;\n\nreturn [{ json: {\n  ...original,\n  query_type: useQueryType ? llmResult.query_type : original.query_type,\n  confidence: Math.max(llmResult.confidence || 0, original.confidence),\n  entities: llmResult.entities?.length > 0 ? llmResult.entities.map(e => ({ name: e, confidence: 0.8, source: 'llm' })) : original.entities,\n  primary_entity: llmResult.entities?.[0] || original.primary_entity,\n  secondary_entity: llmResult.entities?.[1] || original.secondary_entity,\n  category: llmResult.category || original.category,\n  region: llmResult.region || original.region,\n  llm_enhanced: true\n}}];"
+      },
+      "id": "llm-merger",
+      "name": "LLM_Merger",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1820, 300]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-llm-path",
+      "name": "Merge_After_LLM",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2020, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BIGQUERY QUERY BUILDER\nconst input = $input.first().json;\nconst { query_type, primary_entity, secondary_entity, region, category } = input;\n\nfunction buildDeepDiveQuery(entityName) {\n  return `SELECT t.trend_name, t.trend_score, t.category, t.freshness_state, t.first_seen_date, DATE_DIFF(CURRENT_DATE(), t.first_seen_date, DAY) as trend_age_days, e.ip_name, e.characters, e.themes, e.licensable, e.ai_summary, e.recommended_action, s.internal_search_volume, s.catalog_match_count, s.gap_assessment FROM \\`analytics-324613.ttool.trends\\` t LEFT JOIN \\`analytics-324613.ttool.trend_enrichment\\` e ON t.trend_id = e.trend_id LEFT JOIN \\`analytics-324613.ttool.trend_search_gaps\\` s ON t.trend_id = s.trend_id WHERE LOWER(t.trend_name) LIKE LOWER('%${entityName}%') OR LOWER(e.ip_name) LIKE LOWER('%${entityName}%') ORDER BY t.trend_score DESC LIMIT 5`;\n}\n\nfunction buildComparisonQuery(e1, e2) {\n  return `SELECT CASE WHEN LOWER(t.trend_name) LIKE LOWER('%${e1}%') THEN '${e1}' WHEN LOWER(t.trend_name) LIKE LOWER('%${e2}%') THEN '${e2}' END as entity_match, MAX(t.trend_score) as trend_score, MAX(s.internal_search_volume) as internal_search_volume, MAX(s.catalog_match_count) as catalog_coverage, STRING_AGG(DISTINCT s.gap_assessment) as gap_assessment, STRING_AGG(DISTINCT t.freshness_state) as freshness_state FROM \\`analytics-324613.ttool.trends\\` t LEFT JOIN \\`analytics-324613.ttool.trend_enrichment\\` e ON t.trend_id = e.trend_id LEFT JOIN \\`analytics-324613.ttool.trend_search_gaps\\` s ON t.trend_id = s.trend_id WHERE LOWER(t.trend_name) LIKE LOWER('%${e1}%') OR LOWER(t.trend_name) LIKE LOWER('%${e2}%') GROUP BY entity_match HAVING entity_match IS NOT NULL`;\n}\n\nfunction buildCalendarQuery(cat) {\n  const catClause = cat ? `AND t.category = '${cat}'` : '';\n  return `SELECT t.trend_name, t.trend_score, t.category, t.freshness_state, e.ip_name, e.ai_summary, s.catalog_match_count, s.gap_assessment FROM \\`analytics-324613.ttool.trends\\` t LEFT JOIN \\`analytics-324613.ttool.trend_enrichment\\` e ON t.trend_id = e.trend_id LEFT JOIN \\`analytics-324613.ttool.trend_search_gaps\\` s ON t.trend_id = s.trend_id WHERE t.freshness_state IN ('NEW', 'RISING') ${catClause} ORDER BY t.trend_score DESC LIMIT 10`;\n}\n\nfunction buildSearchQuery(term) {\n  return `SELECT t.trend_name, t.trend_score, t.category, t.freshness_state, e.ip_name, s.gap_assessment FROM \\`analytics-324613.ttool.trends\\` t LEFT JOIN \\`analytics-324613.ttool.trend_enrichment\\` e ON t.trend_id = e.trend_id LEFT JOIN \\`analytics-324613.ttool.trend_search_gaps\\` s ON t.trend_id = s.trend_id WHERE LOWER(t.trend_name) LIKE LOWER('%${term}%') OR LOWER(e.ip_name) LIKE LOWER('%${term}%') ORDER BY t.trend_score DESC LIMIT 10`;\n}\n\nfunction buildTopQuery(cat) {\n  const catClause = cat ? `WHERE t.category = '${cat}'` : '';\n  return `SELECT t.trend_name, t.trend_score, t.category, t.freshness_state, e.ip_name, s.internal_search_volume, s.catalog_match_count, s.gap_assessment FROM \\`analytics-324613.ttool.trends\\` t LEFT JOIN \\`analytics-324613.ttool.trend_enrichment\\` e ON t.trend_id = e.trend_id LEFT JOIN \\`analytics-324613.ttool.trend_search_gaps\\` s ON t.trend_id = s.trend_id ${catClause} ORDER BY t.trend_score DESC LIMIT 10`;\n}\n\nlet query = '';\nlet desc = '';\n\nswitch (query_type) {\n  case 'DEEP_DIVE':\n  case 'SIZING':\n  case 'OPINION':\n    query = primary_entity ? buildDeepDiveQuery(primary_entity) : buildTopQuery(category);\n    desc = primary_entity ? `Lookup: ${primary_entity}` : 'Top trends';\n    break;\n  case 'COMPARISON':\n    query = primary_entity && secondary_entity ? buildComparisonQuery(primary_entity, secondary_entity) : (primary_entity ? buildDeepDiveQuery(primary_entity) : buildTopQuery(category));\n    desc = primary_entity && secondary_entity ? `Compare: ${primary_entity} vs ${secondary_entity}` : 'Single lookup';\n    break;\n  case 'SEARCH':\n    query = primary_entity ? buildSearchQuery(primary_entity) : buildTopQuery(category);\n    desc = `Search: ${primary_entity || 'top'}`;\n    break;\n  case 'CALENDAR':\n    query = buildCalendarQuery(category);\n    desc = 'Upcoming trends';\n    break;\n  case 'REGIONAL':\n    query = buildTopQuery(category); // Simplified - add region filter if available\n    desc = `Regional: ${region || 'all'}`;\n    break;\n  case 'NEWS':\n    query = null;\n    desc = 'News - no DB lookup';\n    break;\n  default:\n    query = buildTopQuery(category);\n    desc = 'Default top';\n}\n\nreturn [{ json: { ...input, bigquery_query: query, query_description: desc, needs_lookup: query !== null } }];"
+      },
+      "id": "bq-query-builder",
+      "name": "BQ_Query_Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "needs-lookup",
+              "leftValue": "={{ $json.needs_lookup }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-needs-bq",
+      "name": "Needs_BigQuery",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2420, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "projectId": {
+          "__rl": true,
+          "value": "analytics-324613",
+          "mode": "list"
+        },
+        "rawQuery": "={{ $json.bigquery_query }}",
+        "options": {}
+      },
+      "id": "bq-execute",
+      "name": "BigQuery_Execute",
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2,
+      "position": [2620, 300],
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "bigquery-creds",
+          "name": "BigQuery Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// No-op for NEWS queries - pass through with empty results\nconst input = $input.first().json;\nreturn [{ json: { ...input, results: [] } }];"
+      },
+      "id": "skip-bq",
+      "name": "Skip_BigQuery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2620, 500]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-bq-results",
+      "name": "Merge_BQ_Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2820, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// RESPONSE FORMATTER - Full version in 03_response_formatter.js\nconst input = $input.first().json;\nconst queryInput = $('BQ_Query_Builder').first().json;\n\nconst { query_type, primary_entity, secondary_entity, region, category, original_text, user_id, channel_id, thread_ts, response_url } = queryInput;\nconst results = input.results || input || [];\nconst hasData = Array.isArray(results) ? results.length > 0 : false;\n\nfunction formatNumber(num) { if (!num) return '—'; if (num >= 1000) return (num / 1000).toFixed(1) + 'k'; return num.toString(); }\nfunction getScoreEmoji(s) { if (!s) return '⚪'; if (s >= 80) return '🔥'; if (s >= 60) return '📈'; if (s >= 40) return '➡️'; return '📉'; }\nfunction getGapEmoji(g) { if (!g) return '⚪'; const u = g.toUpperCase(); if (u.includes('HIGH')) return '🟢'; if (u.includes('WATCH') || u.includes('MEDIUM')) return '🟡'; if (u.includes('SATURATED')) return '🔴'; return '⚪'; }\nfunction formatCategory(c) { const m = { 'GAMES': '🎮 Games', 'MANGA_ANIME': '🎌 Anime/Manga', 'MOVIES': '🎬 Movies', 'TV_SERIES': '📺 TV Series' }; return m[c] || c || 'Unknown'; }\nfunction esc(t) { if (!t) return ''; return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }\n\nfunction getResourceLinks(name, cat) {\n  const enc = encodeURIComponent(name);\n  const links = [];\n  if (!cat || cat === 'GAMES') links.push(`• 🎮 SteamDB: https://steamdb.info/search/?q=${enc}`);\n  if (!cat || cat === 'MOVIES' || cat === 'TV_SERIES') links.push(`• 🎬 IMDB: https://www.imdb.com/find?q=${enc}`);\n  if (!cat || cat === 'MANGA_ANIME') links.push(`• 🎌 MyAnimeList: https://myanimelist.net/search/all?q=${enc}`);\n  links.push(`• 📈 Google Trends: https://trends.google.com/trends/explore?q=${enc}`);\n  return links.join('\\n');\n}\n\nfunction formatNotFound(name) {\n  return { blocks: [\n    { type: 'section', text: { type: 'mrkdwn', text: `🔍 *${esc(name)}* — Not in Trend Database\\n\\nI don't have trend data for this title. This usually means:\\n• Too new/niche to appear in Google Trends\\n• Different spelling in our system\\n• Regional trend not captured` } },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Where to check:*\\n${getResourceLinks(name, category)}` } },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Want me to track this?*\\nReact with 👀 and I'll flag it for manual review.` } }\n  ]};\n}\n\nfunction formatDeepDive(data, name) {\n  if (!data || data.length === 0) return formatNotFound(name);\n  const d = data[0];\n  const score = d.trend_score || 0;\n  return { blocks: [\n    { type: 'header', text: { type: 'plain_text', text: `📊 ${esc(d.trend_name || name)}`, emoji: true } },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Category:* ${formatCategory(d.category)}\\n*IP:* ${esc(d.ip_name) || 'N/A'}` } },\n    { type: 'divider' },\n    { type: 'section', text: { type: 'mrkdwn', text: `*📈 Trend Status*\\n• Score: ${score}/100 ${getScoreEmoji(score)}\\n• Freshness: ${d.freshness_state || 'Unknown'}\\n• Age: ${d.trend_age_days ? d.trend_age_days + ' days' : 'Unknown'}` } },\n    { type: 'section', text: { type: 'mrkdwn', text: `*🎯 Displate Opportunity*\\n• Searches: ${formatNumber(d.internal_search_volume)}/mo\\n• Catalog: ${formatNumber(d.catalog_match_count)} designs\\n• Gap: ${getGapEmoji(d.gap_assessment)} ${d.gap_assessment || 'Unknown'}` } },\n    ...(d.ai_summary ? [{ type: 'section', text: { type: 'mrkdwn', text: `*💡 Context*\\n${esc(d.ai_summary)}` } }] : []),\n    { type: 'context', elements: [{ type: 'mrkdwn', text: `_Data from Google Trends + Displate search. Updated: ${new Date().toLocaleDateString()}_` }] }\n  ]};\n}\n\nfunction formatComparison(data, e1, e2) {\n  if (!data || data.length < 2) return formatNotFound(e1 + ' or ' + e2);\n  const d1 = data.find(d => d.entity_match?.toLowerCase().includes(e1.toLowerCase())) || data[0];\n  const d2 = data.find(d => d.entity_match?.toLowerCase().includes(e2.toLowerCase())) || data[1];\n  return { blocks: [\n    { type: 'header', text: { type: 'plain_text', text: `⚖️ ${esc(e1)} vs ${esc(e2)}`, emoji: true } },\n    { type: 'section', text: { type: 'mrkdwn', text: `| Metric | ${esc(e1)} | ${esc(e2)} |\\n|--------|--------|--------|\\n| Score | ${d1.trend_score || '—'} ${getScoreEmoji(d1.trend_score)} | ${d2.trend_score || '—'} ${getScoreEmoji(d2.trend_score)} |\\n| Searches | ${formatNumber(d1.internal_search_volume)} | ${formatNumber(d2.internal_search_volume)} |\\n| Catalog | ${formatNumber(d1.catalog_coverage)} | ${formatNumber(d2.catalog_coverage)} |\\n| Gap | ${getGapEmoji(d1.gap_assessment)} ${d1.gap_assessment || '—'} | ${getGapEmoji(d2.gap_assessment)} ${d2.gap_assessment || '—'} |` } },\n    { type: 'context', elements: [{ type: 'mrkdwn', text: `_Licensing costs and art complexity not factored._` }] }\n  ]};\n}\n\nfunction formatOpinion(data, name) {\n  if (!data || data.length === 0) return formatNotFound(name);\n  const d = data[0];\n  const score = d.trend_score || 0;\n  const gap = d.gap_assessment || '';\n  let verdict = '', emoji = '';\n  if (gap.includes('HIGH') && score >= 60) { verdict = `*Strong opportunity.* High momentum with catalog gap.`; emoji = '✅'; }\n  else if (gap.includes('HIGH')) { verdict = `*Niche opportunity.* Good gap, moderate momentum.`; emoji = '🟡'; }\n  else if (gap.includes('SATURATED')) { verdict = `*Already covered.* ${d.catalog_match_count}+ designs exist.`; emoji = '⚠️'; }\n  else { verdict = `*Watch list.* Monitor for changes.`; emoji = '👀'; }\n  return { blocks: [\n    { type: 'header', text: { type: 'plain_text', text: `💭 My Take on ${esc(d.trend_name || name)}`, emoji: true } },\n    { type: 'section', text: { type: 'mrkdwn', text: `${emoji} ${verdict}` } },\n    { type: 'divider' },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Numbers:* Score ${score} ${getScoreEmoji(score)} | Searches ${formatNumber(d.internal_search_volume)}/mo | Catalog ${formatNumber(d.catalog_match_count)} | Gap ${getGapEmoji(gap)} ${gap}` } },\n    { type: 'context', elements: [{ type: 'mrkdwn', text: `⚠️ _Based on trend data only. Licensing costs not factored._` }] }\n  ]};\n}\n\nfunction formatNews(name) {\n  return { blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `📰 *News Query — Outside My Scope*\\n\\nI track *trend momentum*, not real-time news or deals.\\n\\n*For news:*\\n• 🎮 Epic Free Games: https://store.epicgames.com/free-games\\n• 🔥 r/GameDeals: https://reddit.com/r/GameDeals\\n• 📰 PC Gamer: https://pcgamer.com${name ? `\\n\\n*Ask \"tell me about ${esc(name)}\"* for trend data.` : ''}` } }] };\n}\n\nfunction formatSearch(data, term) {\n  if (!data || data.length === 0) return formatNotFound(term);\n  const lines = data.slice(0, 8).map((d, i) => `${i + 1}. *${esc(d.trend_name)}* — ${getScoreEmoji(d.trend_score)} ${d.trend_score || '—'} | ${getGapEmoji(d.gap_assessment)} ${d.gap_assessment || '—'}`).join('\\n');\n  return { blocks: [\n    { type: 'header', text: { type: 'plain_text', text: `🔍 Search: \"${esc(term)}\"`, emoji: true } },\n    { type: 'section', text: { type: 'mrkdwn', text: `Found ${data.length} match${data.length > 1 ? 'es' : ''}:\\n\\n${lines}` } },\n    { type: 'context', elements: [{ type: 'mrkdwn', text: `_Ask \"tell me about [name]\" for details._` }] }\n  ]};\n}\n\nfunction formatCalendar(data, cat) {\n  if (!data || data.length === 0) return { blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `🗓️ *No Rising Trends*\\n\\nCheck:\\n• 🎮 Steam: https://store.steampowered.com/explore/upcoming\\n• 📅 IGN: https://www.ign.com/upcoming/games` } }] };\n  const rows = data.slice(0, 8).map(d => `| ${esc(d.trend_name)} | ${d.trend_score || '—'} ${getScoreEmoji(d.trend_score)} | ${formatNumber(d.catalog_match_count)} | ${getGapEmoji(d.gap_assessment)} |`).join('\\n');\n  return { blocks: [\n    { type: 'header', text: { type: 'plain_text', text: `🗓️ Upcoming & Rising${cat ? ' — ' + formatCategory(cat) : ''}`, emoji: true } },\n    { type: 'section', text: { type: 'mrkdwn', text: `| Title | Score | Coverage | Gap |\\n|-------|-------|----------|-----|\\n${rows}` } }\n  ]};\n}\n\nfunction formatHelp() {\n  return { blocks: [\n    { type: 'header', text: { type: 'plain_text', text: '🤖 Trend Tool — What I Can Do', emoji: true } },\n    { type: 'section', text: { type: 'mrkdwn', text: `*Ask about titles:*\\n• \"Tell me about Silent Hill F\"\\n• \"What do you think about PoE2?\"\\n• \"How big is Clair Obscur's fandom?\"\\n\\n*Compare:*\\n• \"Warframe vs Crusader Kings\"\\n\\n*Browse:*\\n• \"Upcoming gaming titles\"\\n• \"Search for Dispatch\"\\n\\n*Can't do:* Real-time news, store deals, release dates` } }\n  ]};\n}\n\nlet response;\nif (original_text.toLowerCase().match(/\\b(help|commands|how do you work)\\b/)) { response = formatHelp(); }\nelse {\n  switch (query_type) {\n    case 'DEEP_DIVE': case 'SIZING': response = formatDeepDive(results, primary_entity); break;\n    case 'COMPARISON': response = formatComparison(results, primary_entity, secondary_entity); break;\n    case 'OPINION': response = formatOpinion(results, primary_entity); break;\n    case 'SEARCH': response = formatSearch(results, primary_entity); break;\n    case 'CALENDAR': response = formatCalendar(results, category); break;\n    case 'NEWS': response = formatNews(primary_entity); break;\n    default: response = hasData ? formatDeepDive(results, primary_entity) : formatNotFound(primary_entity || 'your query');\n  }\n}\n\nreturn [{ json: { response, delivery: { channel_id, thread_ts, response_url, user_id }, metadata: { query_type, primary_entity, had_data: hasData, results_count: results.length } } }];"
+      },
+      "id": "response-formatter",
+      "name": "Response_Formatter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3020, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-response-url",
+              "leftValue": "={{ $json.delivery.response_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-delivery-method",
+      "name": "Slash_Or_Mention",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3220, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.delivery.response_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"response_type\": \"in_channel\",\n  \"blocks\": {{ JSON.stringify($json.response.blocks) }},\n  \"text\": \"Trend Tool response\"\n}",
+        "options": {}
+      },
+      "id": "post-response-url",
+      "name": "Post_Response_URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3420, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "channel": "={{ $json.delivery.channel_id }}",
+        "text": "Trend Tool response",
+        "otherOptions": {
+          "thread_ts": "={{ $json.delivery.thread_ts }}",
+          "blocks": "={{ $json.response.blocks }}"
+        }
+      },
+      "id": "post-slack-message",
+      "name": "Post_Slack_Message",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3420, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-bot-token",
+          "name": "Slack Bot Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook_Events": {
+      "main": [
+        [{ "node": "Is_URL_Verification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Webhook_Slash": {
+      "main": [
+        [{ "node": "Ack_Slash", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is_URL_Verification": {
+      "main": [
+        [{ "node": "Respond_Challenge", "type": "main", "index": 0 }],
+        [{ "node": "Ack_Event", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ack_Event": {
+      "main": [
+        [{ "node": "Merge_Inputs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ack_Slash": {
+      "main": [
+        [{ "node": "Merge_Inputs", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge_Inputs": {
+      "main": [
+        [{ "node": "Query_Classifier", "type": "main", "index": 0 }]
+      ]
+    },
+    "Query_Classifier": {
+      "main": [
+        [{ "node": "Needs_LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Needs_LLM": {
+      "main": [
+        [{ "node": "LLM_Fallback_Prep", "type": "main", "index": 0 }],
+        [{ "node": "Merge_After_LLM", "type": "main", "index": 1 }]
+      ]
+    },
+    "LLM_Fallback_Prep": {
+      "main": [
+        [{ "node": "Gemini_Parse", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gemini_Parse": {
+      "main": [
+        [{ "node": "LLM_Merger", "type": "main", "index": 0 }]
+      ]
+    },
+    "LLM_Merger": {
+      "main": [
+        [{ "node": "Merge_After_LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge_After_LLM": {
+      "main": [
+        [{ "node": "BQ_Query_Builder", "type": "main", "index": 0 }]
+      ]
+    },
+    "BQ_Query_Builder": {
+      "main": [
+        [{ "node": "Needs_BigQuery", "type": "main", "index": 0 }]
+      ]
+    },
+    "Needs_BigQuery": {
+      "main": [
+        [{ "node": "BigQuery_Execute", "type": "main", "index": 0 }],
+        [{ "node": "Skip_BigQuery", "type": "main", "index": 0 }]
+      ]
+    },
+    "BigQuery_Execute": {
+      "main": [
+        [{ "node": "Merge_BQ_Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Skip_BigQuery": {
+      "main": [
+        [{ "node": "Merge_BQ_Results", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge_BQ_Results": {
+      "main": [
+        [{ "node": "Response_Formatter", "type": "main", "index": 0 }]
+      ]
+    },
+    "Response_Formatter": {
+      "main": [
+        [{ "node": "Slash_Or_Mention", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slash_Or_Mention": {
+      "main": [
+        [{ "node": "Post_Response_URL", "type": "main", "index": 0 }],
+        [{ "node": "Post_Slack_Message", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "trend-tool" },
+    { "name": "chatbot" }
+  ]
+}
